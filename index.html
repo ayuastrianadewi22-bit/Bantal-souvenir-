@@ -1,0 +1,1262 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot } from 'firebase/firestore';
+
+export default function App() {
+  // State manajemen project
+  const [projectName, setProjectName] = useState('Iklan Skincare Glowing - Affiliate');
+  const [aspectRatio, setAspectRatio] = useState('9:16'); // '9:16', '1:1', '16:9'
+  const [productName, setProductName] = useState('Serum Retinol Gold');
+  const [productDesc, setProductDesc] = useState('Menghilangkan flek hitam dalam 7 hari, aman untuk kulit sensitif.');
+  const [targetAudience, setTargetAudience] = useState('Wanita 25-45 tahun');
+  const [adTone, setAdTone] = useState('Edukasi & Pembuktian'); // Edukasi, Heboh/Diskon, Soft-sell, ASMR
+
+  // State untuk model / presenter
+  const [selectedModel, setSelectedModel] = useState('model-1');
+  const [customModelImg, setCustomModelImg] = useState(null);
+
+  // Database Model Bawaan (SVG Representasi Karakter)
+  const defaultModels = [
+    { id: 'model-1', name: 'Siti (Beauty & Skincare)', gender: 'Wanita', age: 'Muda', desc: 'Sangat cocok untuk review produk kecantikan.' },
+    { id: 'model-2', name: 'Budi (Gadget & Tech)', gender: 'Pria', age: 'Muda', desc: 'Gaya kasual dan antusias untuk review teknologi.' },
+    { id: 'model-3', name: 'Diana (Fashion & Hijab)', gender: 'Wanita', age: 'Dewasa', desc: 'Anggun dan modis, cocok untuk fashion affiliate.' },
+    { id: 'model-4', name: 'Rian (Home & Living)', gender: 'Pria', age: 'Dewasa', desc: 'Hangat, bergaya bapak rumah tangga modern.' },
+    { id: 'none', name: 'Tanpa Model (Hanya Produk)', gender: '-', age: '-', desc: 'Fokus penuh pada demonstrasi produk.' }
+  ];
+
+  // State Daftar Panel Storyboard
+  const [panels, setPanels] = useState([
+    {
+      id: '1',
+      sceneNum: 1,
+      visualDesc: 'Hook visual: Tunjukkan muka kusam & ekspresi sedih memegang pipi. Zoom dekat ke area kulit.',
+      voiceover: 'Benci banget gak sih liat flek hitam makin tebal di muka? Padahal udah coba macam-macam skincare...',
+      textOverlay: 'Flek Hitam Susah Hilang? 😭',
+      duration: 3,
+      image: null, // DataURL
+      modelVisible: true,
+      modelScale: 100,
+      modelPositionX: 50,
+      modelPositionY: 50,
+    },
+    {
+      id: '2',
+      sceneNum: 2,
+      visualDesc: 'Perkenalan Produk: Tunjukkan botol Serum Retinol Gold dengan pencahayaan estetik / dipegang model.',
+      voiceover: 'Untung nemu Serum Retinol Gold ini! Kandungan bahan aktifnya 5x lebih cepat samarkan noda.',
+      textOverlay: 'Solusi Flek Hitam: 5x Lebih Cepat! ✨',
+      duration: 4,
+      image: null,
+      modelVisible: false,
+      modelScale: 100,
+      modelPositionX: 50,
+      modelPositionY: 50,
+    },
+    {
+      id: '3',
+      sceneNum: 3,
+      visualDesc: 'Demonstrasi / Tekstur: Model mengaplikasikan serum ke wajah, tekstur cair cepat meresap dan glowing seketika.',
+      voiceover: 'Teksturnya ringan banget, gak lengket langsung meresap. Sekali pakai kulit langsung terasa kenyal.',
+      textOverlay: 'Ringan & Glowing Seketika!💧',
+      duration: 4,
+      image: null,
+      modelVisible: true,
+      modelScale: 110,
+      modelPositionX: 50,
+      modelPositionY: 45,
+    },
+    {
+      id: '4',
+      sceneNum: 4,
+      visualDesc: 'Call to Action (CTA): Tunjukkan keranjang kuning di layar bawah / tunjukkan produk dengan tulisan diskon besar.',
+      voiceover: 'Mumpung lagi diskon flash sale plus gratis ongkir, yuk klik keranjang kuning sekarang sebelum kehabisan!',
+      textOverlay: 'Diskon 50% + Free Ongkir! 👇 Klik Sini',
+      duration: 4,
+      image: null,
+      modelVisible: true,
+      modelScale: 100,
+      modelPositionX: 50,
+      modelPositionY: 50,
+    }
+  ]);
+
+  const [activePanelId, setActivePanelId] = useState('1');
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [apiError, setApiError] = useState(null);
+  const [exporting, setExporting] = useState(false);
+  const [showNotification, setShowNotification] = useState(null);
+
+  // Setup Notification helper
+  const triggerNotification = (message, type = 'success') => {
+    setShowNotification({ message, type });
+    setTimeout(() => setShowNotification(null), 4000);
+  };
+
+  // Ambil Panel Aktif
+  const activePanel = panels.find(p => p.id === activePanelId) || panels[0] || {};
+
+  // Update nilai spesifik panel aktif
+  const updateActivePanel = (key, value) => {
+    setPanels(prev => prev.map(p => {
+      if (p.id === activePanelId) {
+        return { ...p, [key]: value };
+      }
+      return p;
+    }));
+  };
+
+  // Tambah Panel Baru
+  const handleAddPanel = () => {
+    const newId = Date.now().toString();
+    const newSceneNum = panels.length + 1;
+    const newPanel = {
+      id: newId,
+      sceneNum: newSceneNum,
+      visualDesc: `Deskripsi Visual Adegan ${newSceneNum}`,
+      voiceover: `Tulis naskah suara pengisi / voiceover di sini...`,
+      textOverlay: `Teks di Video`,
+      duration: 3,
+      image: null,
+      modelVisible: true,
+      modelScale: 100,
+      modelPositionX: 50,
+      modelPositionY: 50,
+    };
+    setPanels([...panels, newPanel]);
+    setActivePanelId(newId);
+    triggerNotification('Panel baru berhasil ditambahkan');
+  };
+
+  // Hapus Panel
+  const handleDeletePanel = (id) => {
+    if (panels.length <= 1) {
+      triggerNotification('Minimal harus memiliki 1 panel storyboard!', 'error');
+      return;
+    }
+    const filtered = panels.filter(p => p.id !== id);
+    // Tata ulang nomor adegan
+    const reordered = filtered.map((p, idx) => ({ ...p, sceneNum: idx + 1 }));
+    setPanels(reordered);
+    if (activePanelId === id) {
+      setActivePanelId(reordered[0].id);
+    }
+    triggerNotification('Panel berhasil dihapus');
+  };
+
+  // Duplikat Panel
+  const handleDuplicatePanel = (panel) => {
+    const newId = Date.now().toString();
+    const currentIdx = panels.findIndex(p => p.id === panel.id);
+    const duplicated = {
+      ...panel,
+      id: newId,
+      sceneNum: panel.sceneNum + 1,
+      image: panel.image // Salin gambar jika ada
+    };
+    
+    const updated = [...panels];
+    updated.splice(currentIdx + 1, 0, duplicated);
+    
+    // Urutkan kembali nomor scene
+    const reordered = updated.map((p, idx) => ({ ...p, sceneNum: idx + 1 }));
+    setPanels(reordered);
+    setActivePanelId(newId);
+    triggerNotification('Panel berhasil diduplikasi');
+  };
+
+  // Handler Unggah Gambar untuk Panel Aktif
+  const handlePanelImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        updateActivePanel('image', reader.result);
+        triggerNotification('Gambar panel berhasil diunggah');
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Handler Unggah Model Kustom
+  const handleCustomModelUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setCustomModelImg(reader.result);
+        setSelectedModel('custom');
+        triggerNotification('Model kustom berhasil diunggah');
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Pembuatan Storyboard Menggunakan Gemini API (AI Copilot)
+  const handleGenerateAIScript = async () => {
+    setAiGenerating(true);
+    setApiError(null);
+    const apiKey = ""; // Diset kosong untuk diisi runtime lingkungan otomatis
+
+    const systemPrompt = `Kamu adalah seorang ahli naskah iklan digital dan pembuat konsep konten affiliate TikTok/Reels profesional. Tugasmu adalah membuat rancangan storyboard iklan affiliate kreatif sebanyak 4-5 panel berdasarkan detail produk dari pengguna.
+Hasil akhir harus disajikan dalam format JSON murni terstruktur tanpa markdown atau teks tambahan di luar JSON. Format JSON harus berupa array objek panel dengan properti:
+- sceneNum (angka)
+- visualDesc (string detail visual adegan kreatif, hook, perbandingan, demonstrasi)
+- voiceover (string kalimat pengisi suara persuasif gaya affiliate)
+- textOverlay (string teks singkat eye-catching di layar)
+- duration (angka detik)`;
+
+    const userPrompt = `Buatkan storyboard iklan affiliate kreatif untuk produk: ${productName}.
+Deskripsi Produk: ${productDesc}.
+Target Audiens: ${targetAudience}.
+Gaya Video / Nada Bicara: ${adTone}.
+Gunakan bahasa Indonesia yang santai, persuasif, persuasif, trendi khas konten kreator TikTok/Reels saat ini.`;
+
+    try {
+      // Implementasi Exponential Backoff
+      let retries = 5;
+      let delay = 1000;
+      let response = null;
+
+      while (retries > 0) {
+        try {
+          const apiURL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+          response = await fetch(apiURL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: userPrompt }] }],
+              systemInstruction: { parts: [{ text: systemPrompt }] },
+              generationConfig: {
+                responseMimeType: "application/json",
+              }
+            })
+          });
+
+          if (response.ok) break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) throw err;
+          await new Promise(res => setTimeout(res, delay));
+          delay *= 2;
+        }
+      }
+
+      if (!response || !response.ok) {
+        throw new Error("Gagal menghubungi layanan kecerdasan buatan Gemini. Silakan coba sesaat lagi.");
+      }
+
+      const data = await response.json();
+      const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      
+      if (textResponse) {
+        const generatedPanels = JSON.parse(textResponse);
+        if (Array.isArray(generatedPanels)) {
+          // Format data ke struktur panel lokal
+          const formatted = generatedPanels.map((p, idx) => ({
+            id: (Date.now() + idx).toString(),
+            sceneNum: p.sceneNum || (idx + 1),
+            visualDesc: p.visualDesc || 'Visual deskripsi otomatis',
+            voiceover: p.voiceover || 'Naskah suara otomatis',
+            textOverlay: p.textOverlay || 'Teks video',
+            duration: p.duration || 3,
+            image: null,
+            modelVisible: true,
+            modelScale: 100,
+            modelPositionX: 50,
+            modelPositionY: 50
+          }));
+          setPanels(formatted);
+          setActivePanelId(formatted[0].id);
+          triggerNotification('AI berhasil menyusun naskah & konsep storyboard!');
+        } else {
+          throw new Error("Format respon AI tidak sesuai standard array.");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setApiError(err.message || 'Terjadi kesalahan saat menghubungi AI.');
+      triggerNotification('Gagal membuat naskah AI', 'error');
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  // Rendering avatar model berbasis SVG atau Gambar Custom
+  const renderModelVisual = (panel, renderForExport = false) => {
+    const isModelVisible = panel.modelVisible;
+    if (!isModelVisible || selectedModel === 'none') return null;
+
+    const style = {
+      position: 'absolute',
+      width: `${panel.modelScale || 100}%`,
+      left: `${panel.modelPositionX || 50}%`,
+      top: `${panel.modelPositionY || 50}%`,
+      transform: 'translate(-50%, -50%)',
+      pointerEvents: 'none',
+      transition: renderForExport ? 'none' : 'all 0.1s ease-out'
+    };
+
+    if (selectedModel === 'custom' && customModelImg) {
+      return (
+        <img 
+          src={customModelImg} 
+          alt="Model Custom" 
+          style={style} 
+          className="object-contain max-h-full"
+        />
+      );
+    }
+
+    // Default SVG Models
+    return (
+      <div style={style} className="flex justify-center items-center h-full max-h-full">
+        {selectedModel === 'model-1' && (
+          // Siti - Beauty model (Hijab/Korean look representation)
+          <svg className="w-4/5 h-4/5 max-h-[180px]" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="40" r="22" fill="#FED7AA" /> {/* Skin */}
+            <path d="M50 18C36 18 28 28 28 42C28 44 29 48 31 48C33 48 34 38 50 38C66 38 67 48 69 48C71 48 72 44 72 42C72 28 64 18 50 18Z" fill="#F472B6" /> {/* Hijab Outer */}
+            <circle cx="43" cy="40" r="2" fill="#1E293B" /> {/* Eye L */}
+            <circle cx="57" cy="40" r="2" fill="#1E293B" /> {/* Eye R */}
+            <path d="M47 48C47 49.5 48 51 50 51C52 51 53 49.5 53 48" stroke="#E11D48" strokeWidth="2" strokeLinecap="round" /> {/* Smile */}
+            <ellipse cx="40" cy="43" rx="3" ry="1.5" fill="#F87171" opacity="0.6" /> {/* Blush L */}
+            <ellipse cx="60" cy="43" rx="3" ry="1.5" fill="#F87171" opacity="0.6" /> {/* Blush R */}
+            <path d="M50 18C44 18 42 22 42 25C42 28 44 30 50 30C56 30 58 28 58 25C58 22 56 18 50 18Z" fill="#DB2777" /> {/* Hijab Cap */}
+            <path d="M28 62C28 62 35 56 50 56C65 56 72 62 72 62V90H28V62Z" fill="#EC4899" /> {/* Dress */}
+            <path d="M38 56C38 56 42 66 50 66C58 66 62 56 62 56" stroke="#F472B6" strokeWidth="4" /> {/* Scarf Fold */}
+          </svg>
+        )}
+        {selectedModel === 'model-2' && (
+          // Budi - Tech Enthusiast
+          <svg className="w-4/5 h-4/5 max-h-[180px]" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="38" r="20" fill="#FFD8A8" /> {/* Skin */}
+            <path d="M28 35C28 20 38 18 50 18C62 18 72 20 72 35C72 38 74 30 70 25C66 20 58 18 50 18C42 18 34 20 30 25C26 30 28 38 28 35Z" fill="#1E293B" /> {/* Hair */}
+            <rect x="36" y="34" width="10" height="6" rx="1" stroke="#000" strokeWidth="2" fill="none" /> {/* Glasses L */}
+            <rect x="54" y="34" width="10" height="6" rx="1" stroke="#000" strokeWidth="2" fill="none" /> {/* Glasses R */}
+            <line x1="46" y1="37" x2="54" y2="37" stroke="#000" strokeWidth="2" /> {/* Glasses bridge */}
+            <circle cx="41" cy="37" r="1.5" fill="#000" />
+            <circle cx="59" cy="37" r="1.5" fill="#000" />
+            <path d="M47 48C47 48 48.5 51 50 51C51.5 51 53 48 53 48" stroke="#1E293B" strokeWidth="2" strokeLinecap="round" /> {/* Smile */}
+            <path d="M25 65C25 55 35 55 50 55C65 55 75 65 75 65V90H25V65Z" fill="#3B82F6" /> {/* Polo Shirt */}
+            <path d="M50 55V68" stroke="#1D4ED8" strokeWidth="2" /> {/* Shirt buttons */}
+          </svg>
+        )}
+        {selectedModel === 'model-3' && (
+          // Diana - Fashion / Hijab Elegant
+          <svg className="w-4/5 h-4/5 max-h-[180px]" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="38" r="21" fill="#FFE3E3" />
+            <path d="M50 14C32 14 24 24 24 40C24 55 32 60 50 60C68 60 76 55 76 40C76 24 68 14 50 14Z" fill="#3F2E2E" /> {/* Elegant Hijab Wrap */}
+            <circle cx="43" cy="38" r="2" fill="#1E293B" />
+            <circle cx="57" cy="38" r="2" fill="#1E293B" />
+            <path d="M41 33C43 32 45 33 45 33" stroke="#1E293B" strokeWidth="1.5" strokeLinecap="round" /> {/* Eyebrow L */}
+            <path d="M59 33C57 32 55 33 55 33" stroke="#1E293B" strokeWidth="1.5" strokeLinecap="round" /> {/* Eyebrow R */}
+            <path d="M46 47C46 49 48 50 50 50C52 50 54 49 54 47" stroke="#BE123C" strokeWidth="2" strokeLinecap="round" />
+            <ellipse cx="38" cy="42" rx="3.5" ry="2" fill="#FDA4AF" opacity="0.5" />
+            <ellipse cx="62" cy="42" rx="3.5" ry="2" fill="#FDA4AF" opacity="0.5" />
+            <path d="M22 64C22 64 30 58 50 58C70 58 78 64 78 64V90H22V64Z" fill="#10B981" /> {/* Pastel Dress */}
+          </svg>
+        )}
+        {selectedModel === 'model-4' && (
+          // Rian - Home & Living
+          <svg className="w-4/5 h-4/5 max-h-[180px]" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="50" cy="38" r="21" fill="#FFD8A8" />
+            <path d="M28 32C30 18 42 16 50 16C58 16 70 18 72 32C72 32 68 22 50 22C32 22 28 32 28 32Z" fill="#78350F" /> {/* Brown hair */}
+            <path d="M40 33C43 32 46 33 46 33" stroke="#000" strokeWidth="1.5" />
+            <path d="M60 33C57 32 54 33 54 33" stroke="#000" strokeWidth="1.5" />
+            <circle cx="43" cy="38" r="2.5" fill="#1E293B" />
+            <circle cx="57" cy="38" r="2.5" fill="#1E293B" />
+            <path d="M45 48C45 49.5 47 51 50 51C53 51 55 49.5 55 48" stroke="#1E293B" strokeWidth="2" strokeLinecap="round" />
+            <path d="M45 42h10v2H45z" fill="#78350F" opacity="0.4" /> {/* Beard mustache hint */}
+            <path d="M24 64C24 56 34 56 50 56C66 56 76 64 76 64V90H24V64Z" fill="#4B5563" /> {/* Warm Sweater */}
+            <path d="M50 56l-8 12h16l-8-12z" fill="#FFD8A8" /> {/* V-neck cutout */}
+          </svg>
+        )}
+      </div>
+    );
+  };
+
+  // Rasio Aspek Styling Kelas
+  const getRatioClass = (ratio) => {
+    switch (ratio) {
+      case '9:16': return 'aspect-[9/16] w-[210px] h-[373px]';
+      case '1:1': return 'aspect-square w-[280px] h-[280px]';
+      case '16:9': return 'aspect-[16/9] w-[373px] h-[210px]';
+      default: return 'aspect-[9/16] w-[210px] h-[373px]';
+    }
+  };
+
+  // Fungsi Ekspor Storyboard Menggunakan HTML Canvas
+  const handleExportPNG = async () => {
+    setExporting(true);
+    triggerNotification('Sedang memproses penggabungan berkas gambar...');
+
+    try {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      // Ukuran Grid Storyboard yang akan diunduh
+      // Kita rancang layout: 2 Kolom untuk menghemat ruang dan rapi
+      const columns = 2;
+      const rows = Math.ceil(panels.length / columns);
+      
+      // Dimensi Panel dalam ekspor gambar
+      let panelW = 320;
+      let panelH = 570; // Default 9:16 ratio scale
+      if (aspectRatio === '1:1') {
+        panelW = 400;
+        panelH = 400;
+      } else if (aspectRatio === '16:9') {
+        panelW = 500;
+        panelH = 281;
+      }
+
+      const panelSpacing = 40;
+      const padding = 60;
+      const headerHeight = 160;
+
+      // Hitung lebar & tinggi canvas total
+      const totalWidth = (columns * panelW) + ((columns - 1) * panelSpacing) + (padding * 2);
+      const totalHeight = headerHeight + (rows * (panelH + 280)) + ((rows - 1) * panelSpacing) + (padding * 2);
+
+      canvas.width = totalWidth;
+      canvas.height = totalHeight;
+
+      // 1. Gambar Background Canvas
+      ctx.fillStyle = '#0F172A'; // Dark navy bg
+      ctx.fillRect(0, 0, totalWidth, totalHeight);
+
+      // 2. Gambar Header Storyboard
+      ctx.fillStyle = '#1E293B'; // Gray header box
+      ctx.fillRect(padding - 20, padding - 20, totalWidth - (padding * 2) + 40, headerHeight - 40);
+
+      // Judul Utama
+      ctx.fillStyle = '#F8FAFC';
+      ctx.font = 'bold 28px sans-serif';
+      ctx.fillText(projectName.toUpperCase(), padding, padding + 35);
+
+      // Metadata Subtitle
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`Produk: ${productName}  |  Rasio: ${aspectRatio}  |  Target: ${targetAudience}  |  Nada: ${adTone}`, padding, padding + 75);
+
+      ctx.fillStyle = '#38BDF8';
+      ctx.font = '13px monospace';
+      ctx.fillText(`Generated by Affiliate Storyboard Generator • ${new Date().toLocaleDateString('id-ID')}`, padding, padding + 105);
+
+      // 3. Iterasi dan Gambar Setiap Panel
+      for (let i = 0; i < panels.length; i++) {
+        const panel = panels[i];
+        const col = i % columns;
+        const row = Math.floor(i / columns);
+
+        const x = padding + col * (panelW + panelSpacing);
+        const y = padding + headerHeight + row * (panelH + 280 + panelSpacing);
+
+        // Frame Box Panel
+        ctx.fillStyle = '#1E293B';
+        ctx.fillRect(x - 10, y - 10, panelW + 20, panelH + 260);
+        ctx.strokeStyle = '#475569';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x - 10, y - 10, panelW + 20, panelH + 260);
+
+        // Header Panel: "Adegan X (Y detik)"
+        ctx.fillStyle = '#38BDF8';
+        ctx.font = 'bold 16px sans-serif';
+        ctx.fillText(`ADEGAN ${panel.sceneNum}`, x, y + 20);
+
+        ctx.fillStyle = '#94A3B8';
+        ctx.font = '14px sans-serif';
+        const durText = `${panel.duration} detik`;
+        const durTextWidth = ctx.measureText(durText).width;
+        ctx.fillText(durText, x + panelW - durTextWidth, y + 20);
+
+        // Area Visual Frame (Sesuai Rasio Aspek)
+        const frameX = x;
+        const frameY = y + 40;
+        
+        ctx.fillStyle = '#0F172A';
+        ctx.fillRect(frameX, frameY, panelW, panelH);
+        ctx.strokeStyle = '#64748B';
+        ctx.strokeRect(frameX, frameY, panelW, panelH);
+
+        // Jika ada unggahan gambar dari pengguna
+        if (panel.image) {
+          try {
+            const img = await new Promise((resolve, reject) => {
+              const oImg = new Image();
+              oImg.onload = () => resolve(oImg);
+              oImg.onerror = () => reject();
+              oImg.src = panel.image;
+            });
+            
+            // Gambar dicrop / dipasang di tengah frame visual
+            const imgRatio = img.width / img.height;
+            const frameRatio = panelW / panelH;
+            let drawW, drawH, drawX, drawY;
+
+            if (imgRatio > frameRatio) {
+              drawH = panelH;
+              drawW = panelH * imgRatio;
+              drawX = frameX + (panelW - drawW) / 2;
+              drawY = frameY;
+            } else {
+              drawW = panelW;
+              drawH = panelW / imgRatio;
+              drawX = frameX;
+              drawY = frameY + (panelH - drawH) / 2;
+            }
+
+            ctx.save();
+            // Clip agar tidak keluar frame visual
+            ctx.beginPath();
+            ctx.rect(frameX, frameY, panelW, panelH);
+            ctx.clip();
+            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+            ctx.restore();
+          } catch (e) {
+            console.log("Gagal memuat gambar panel pada saat ekspor", e);
+          }
+        } else {
+          // Placeholder teks jika tidak ada gambar
+          ctx.fillStyle = '#334155';
+          ctx.font = 'italic 13px sans-serif';
+          const txt = "[Unggah Gambar Visual]";
+          const txtW = ctx.measureText(txt).width;
+          ctx.fillText(txt, frameX + (panelW - txtW) / 2, frameY + (panelH / 2));
+        }
+
+        // Gambar Model Virtual di atas gambar/panel
+        if (panel.modelVisible && selectedModel !== 'none') {
+          // Untuk versi Canvas Ekspor, gambar avatar siluet bersih agar cepat ter-render
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(frameX, frameY, panelW, panelH);
+          ctx.clip();
+
+          // Hitung posisi model berdasarkan persentase
+          const modelScaleRatio = (panel.modelScale || 100) / 100;
+          const mw = panelW * 0.7 * modelScaleRatio;
+          const mh = panelH * 0.7 * modelScaleRatio;
+          const mx = frameX + (panelW * ((panel.modelPositionX || 50) / 100)) - (mw / 2);
+          const my = frameY + (panelH * ((panel.modelPositionY || 50) / 100)) - (mh / 2);
+
+          // Gambar Representasi Model Sederhana di Canvas
+          ctx.fillStyle = 'rgba(56, 189, 248, 0.25)'; // Highlight biru transparan
+          ctx.strokeStyle = '#38BDF8';
+          ctx.lineWidth = 1.5;
+          
+          // Lingkaran Kepala
+          ctx.beginPath();
+          ctx.arc(mx + (mw/2), my + (mh*0.35), mw * 0.2, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+
+          // Bahu / Badan
+          ctx.beginPath();
+          ctx.moveTo(mx + (mw * 0.2), my + (mh * 0.85));
+          ctx.quadraticCurveTo(mx + (mw * 0.2), my + (mh * 0.55), mx + (mw/2), my + (mh * 0.55));
+          ctx.quadraticCurveTo(mx + (mw * 0.8), my + (mh * 0.55), mx + (mw * 0.8), my + (mh * 0.85));
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+
+          // Label Model Tag
+          ctx.fillStyle = '#38BDF8';
+          ctx.font = 'bold 10px monospace';
+          ctx.fillText("MODEL", mx + (mw/2) - 15, my + (mh * 0.55) - 15);
+
+          ctx.restore();
+        }
+
+        // Gambar Overlay Teks Video di dalam visual adegan bawah
+        if (panel.textOverlay) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+          const textY = frameY + panelH - 45;
+          ctx.fillRect(frameX + 15, textY, panelW - 30, 32);
+          ctx.strokeStyle = '#FACC15'; // border kuning teks
+          ctx.lineWidth = 1;
+          ctx.strokeRect(frameX + 15, textY, panelW - 30, 32);
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 11px sans-serif';
+          const txtLimit = panel.textOverlay.length > 40 ? panel.textOverlay.slice(0, 37) + "..." : panel.textOverlay;
+          const textW = ctx.measureText(txtLimit).width;
+          ctx.fillText(txtLimit, frameX + (panelW - textW) / 2, textY + 20);
+        }
+
+        // 4. Area Informasi Deskripsi Adegan & Audio
+        const infoY = frameY + panelH + 20;
+        
+        // Kotak Deskripsi Visual
+        ctx.fillStyle = '#0F172A';
+        ctx.fillRect(x, infoY, panelW, 80);
+        ctx.strokeStyle = '#334155';
+        ctx.strokeRect(x, infoY, panelW, 80);
+
+        ctx.fillStyle = '#38BDF8';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillText("DESKRIPSI VISUAL:", x + 10, infoY + 20);
+
+        ctx.fillStyle = '#E2E8F0';
+        ctx.font = '11px sans-serif';
+        wrapText(ctx, panel.visualDesc || '-', x + 10, infoY + 40, panelW - 20, 16);
+
+        // Kotak Naskah Suara (VO)
+        const voY = infoY + 95;
+        ctx.fillStyle = '#0F172A';
+        ctx.fillRect(x, voY, panelW, 90);
+        ctx.strokeStyle = '#334155';
+        ctx.strokeRect(x, voY, panelW, 90);
+
+        ctx.fillStyle = '#FACC15'; // Kuning untuk audio / VO
+        ctx.font = 'bold 11px sans-serif';
+        ctx.fillText("AUDIO / VOICE OVER (VO):", x + 10, voY + 20);
+
+        ctx.fillStyle = '#F8FAFC';
+        ctx.font = 'italic 11px sans-serif';
+        wrapText(ctx, `"${panel.voiceover || '-'}"`, x + 10, voY + 40, panelW - 20, 16);
+      }
+
+      // Konversi canvas ke unduhan
+      const imgData = canvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = `${projectName.toLowerCase().replace(/\s+/g, '-')}-storyboard.png`;
+      link.href = imgData;
+      link.click();
+      
+      triggerNotification('Storyboard berhasil dirakit & diunduh!');
+    } catch (err) {
+      console.error(err);
+      triggerNotification('Gagal memproses ekspor gambar', 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Helper fungsi untuk wrapping text pada Canvas HTML5
+  function wrapText(context, text, x, y, maxWidth, lineHeight) {
+    const words = text.split(' ');
+    let line = '';
+    let currentY = y;
+    let linesDrawn = 0;
+
+    for (let n = 0; n < words.length; n++) {
+      let testLine = line + words[n] + ' ';
+      let metrics = context.measureText(testLine);
+      let testWidth = metrics.width;
+      
+      if (testWidth > maxWidth && n > 0) {
+        if (linesDrawn < 2) { // Batasi maksimal 2-3 baris agar tidak meluber
+          context.fillText(line, x, currentY);
+          line = words[n] + ' ';
+          currentY += lineHeight;
+          linesDrawn++;
+        } else {
+          context.fillText(line.trim() + '...', x, currentY);
+          return;
+        }
+      } else {
+        line = testLine;
+      }
+    }
+    if (linesDrawn < 3) {
+      context.fillText(line, x, currentY);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+      {/* Toast Notification */}
+      {showNotification && (
+        <div className={`fixed top-4 right-4 z-50 flex items-center p-4 rounded-lg shadow-lg border transition-all duration-300 transform translate-y-0 ${
+          showNotification.type === 'error' 
+            ? 'bg-rose-950/90 border-rose-500 text-rose-200' 
+            : 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
+        }`}>
+          <span className="text-sm font-semibold mr-2">
+            {showNotification.type === 'error' ? '⚠️' : '✅'}
+          </span>
+          <span className="text-xs">{showNotification.message}</span>
+        </div>
+      )}
+
+      {/* Header Utama App */}
+      <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur px-6 py-4 flex flex-wrap justify-between items-center gap-4 sticky top-0 z-40">
+        <div className="flex items-center gap-3">
+          <div className="bg-sky-600 text-slate-900 p-2.5 rounded-xl font-bold flex items-center justify-center">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-lg font-black tracking-wide bg-gradient-to-r from-sky-400 to-indigo-400 bg-clip-text text-transparent">
+              AD-STORYBOARD
+            </h1>
+            <p className="text-xs text-slate-400">Affiliate Video Ad Concept Generator</p>
+          </div>
+        </div>
+
+        {/* Input Nama Project */}
+        <div className="flex items-center gap-2 max-w-sm w-full sm:w-auto">
+          <input 
+            type="text" 
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-sky-500 focus:outline-none w-full text-slate-200 font-medium"
+            placeholder="Nama Kampanye Iklan..."
+          />
+        </div>
+
+        {/* Tombol Ekspor & Cetak */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleExportPNG}
+            disabled={exporting}
+            className="flex items-center gap-1.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 text-slate-950 font-bold px-4 py-2 rounded-lg text-xs transition shadow-lg shadow-sky-950/20"
+          >
+            {exporting ? (
+              <span className="inline-block animate-spin mr-1">⌛</span>
+            ) : (
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+            )}
+            {exporting ? 'Memproses...' : 'Unduh Gambar (PNG)'}
+          </button>
+        </div>
+      </header>
+
+      {/* Main Container Layout */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
+        
+        {/* Panel Kiri: Project Setup & AI Copilot */}
+        <aside className="w-full lg:w-80 border-r border-slate-800 bg-slate-900/40 p-5 flex flex-col gap-6 overflow-y-auto shrink-0">
+          <div>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-sky-400 mb-3 flex items-center gap-1.5">
+              <span>📐</span> Pengaturan Frame Iklan
+            </h2>
+            <label className="block text-xs text-slate-400 mb-1.5">Pilih Rasio Aspek Video</label>
+            <div className="grid grid-cols-3 gap-1.5 mb-4">
+              {[
+                { val: '9:16', label: '9:16 (TikTok)', desc: 'Reels / Shorts' },
+                { val: '1:1', label: '1:1 (Square)', desc: 'Instagram' },
+                { val: '16:9', label: '16:9 (Lanskap)', desc: 'YouTube' }
+              ].map((item) => (
+                <button
+                  key={item.val}
+                  onClick={() => {
+                    setAspectRatio(item.val);
+                    triggerNotification(`Rasio diubah ke ${item.val}`);
+                  }}
+                  className={`p-2 rounded-lg border text-center transition flex flex-col items-center justify-center ${
+                    aspectRatio === item.val
+                      ? 'bg-sky-950/40 border-sky-500 text-sky-300'
+                      : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400'
+                  }`}
+                >
+                  <span className="text-xs font-bold">{item.label}</span>
+                  <span className="text-[9px] opacity-75">{item.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="border-t border-slate-800/80 pt-4">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-amber-400 mb-3 flex items-center gap-1.5">
+              <span>🤖</span> AI Storyboard Copilot
+            </h2>
+            <div className="bg-amber-950/20 border border-amber-900/50 rounded-xl p-3 mb-4 text-xs text-amber-300/90 leading-relaxed">
+              Tulis produk jualan Anda di bawah, lalu biarkan AI menyusun naskah & storyboard yang memicu konversi pembelian dalam hitungan detik!
+            </div>
+
+            <div className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">Nama Produk Afiliasi</label>
+                <input
+                  type="text"
+                  value={productName}
+                  onChange={(e) => setProductName(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  placeholder="Misal: Serum Retinol Gold, Sapu Otomatis"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Keunggulan & Manfaat Utama</label>
+                <textarea
+                  value={productDesc}
+                  onChange={(e) => setProductDesc(e.target.value)}
+                  rows="2"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500 text-xs"
+                  placeholder="Deskripsikan fitur terbaik produk..."
+                ></textarea>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Target Penonton</label>
+                  <input
+                    type="text"
+                    value={targetAudience}
+                    onChange={(e) => setTargetAudience(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                    placeholder="Contoh: Ibu Rumah Tangga"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Nada Suara Iklan</label>
+                  <select
+                    value={adTone}
+                    onChange={(e) => setAdTone(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                  >
+                    <option value="Edukasi & Pembuktian">Edukasi / Solutif</option>
+                    <option value="Diskon Heboh">Diskon / FOMO</option>
+                    <option value="Soft-sell Storytelling">Bercerita / Curhat</option>
+                    <option value="Unboxing ASMR">ASMR / Estetik</option>
+                  </select>
+                </div>
+              </div>
+
+              {apiError && (
+                <div className="p-2.5 bg-rose-950/40 border border-rose-900/50 rounded-lg text-rose-300 text-[11px] leading-relaxed">
+                  {apiError}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleGenerateAIScript}
+                disabled={aiGenerating}
+                className="w-full bg-amber-500 hover:bg-amber-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-950 font-black py-2.5 px-4 rounded-lg flex items-center justify-center gap-1.5 transition text-xs shadow-lg shadow-amber-950/20"
+              >
+                {aiGenerating ? (
+                  <>
+                    <span className="animate-spin text-sm">🔄</span>
+                    <span>AI sedang berpikir...</span>
+                  </>
+                ) : (
+                  <>
+                    <span>✨</span>
+                    <span>Susun Storyboard via AI</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        {/* Panel Tengah: Live Editor & Previews */}
+        <main className="flex-1 bg-slate-900/20 p-4 sm:p-6 overflow-y-auto flex flex-col gap-6">
+          
+          {/* Bagian Area Pratinjau Panel Aktif */}
+          <div className="bg-slate-900/60 rounded-2xl border border-slate-800/80 p-5">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-4 flex items-center justify-between">
+              <span>🎯 Pratinjau Video Real-Time (Adegan {activePanel.sceneNum || 1})</span>
+              <span className="text-sky-400 font-mono text-[10px]">Rasio Aktif: {aspectRatio}</span>
+            </h3>
+
+            <div className="flex flex-col md:flex-row items-center justify-center gap-8 py-4">
+              {/* Box Frame Monitor Video Simulasi */}
+              <div className="relative border-4 border-slate-700 bg-slate-950 rounded-2xl shadow-2xl overflow-hidden flex items-center justify-center shrink-0">
+                
+                {/* Frame Container sesuai dengan Aspect Ratio terpilih */}
+                <div className={`relative overflow-hidden flex items-center justify-center ${getRatioClass(aspectRatio)}`}>
+                  
+                  {/* Visual Background Gambar Panel */}
+                  {activePanel.image ? (
+                    <img 
+                      src={activePanel.image} 
+                      alt="Pratinjau visual adegan" 
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-slate-900 text-slate-500">
+                      <svg className="w-8 h-8 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                      </svg>
+                      <span className="text-[10px]">Belum ada gambar visual untuk adegan ini.</span>
+                    </div>
+                  )}
+
+                  {/* Render Model Presenter Virtual */}
+                  {renderModelVisual(activePanel)}
+
+                  {/* Teks Overlay Simulasi Cap di Layar Video */}
+                  {activePanel.textOverlay && (
+                    <div className="absolute bottom-6 left-3 right-3 bg-black/75 text-white py-1.5 px-2 text-[10px] text-center font-bold border border-yellow-400 rounded shadow-md pointer-events-none line-clamp-2">
+                      {activePanel.textOverlay}
+                    </div>
+                  )}
+
+                  {/* Durasi Tag di Sudut */}
+                  <div className="absolute top-2 right-2 bg-slate-900/80 border border-slate-700 text-[10px] text-slate-300 px-2 py-0.5 rounded-full font-mono">
+                    ⏱️ {activePanel.duration}s
+                  </div>
+
+                  {/* Adegan Tag di Kiri */}
+                  <div className="absolute top-2 left-2 bg-sky-900/90 border border-sky-700 text-[10px] text-sky-200 px-2 py-0.5 rounded-full font-bold">
+                    Adegan {activePanel.sceneNum}
+                  </div>
+                </div>
+              </div>
+
+              {/* Formulir Edit Detil untuk Panel yang Aktif */}
+              <div className="flex-1 w-full space-y-4">
+                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-4 space-y-3">
+                  <div className="flex justify-between items-center pb-2 border-b border-slate-800">
+                    <span className="text-xs font-bold text-sky-400 flex items-center gap-1">
+                      <span>✏️</span> Detail Isi Panel {activePanel.sceneNum}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleDuplicatePanel(activePanel)}
+                        className="text-[10px] bg-slate-800 hover:bg-slate-700 px-2 py-1 rounded text-slate-300 font-bold transition"
+                        title="Duplikat panel ini"
+                      >
+                        Duplikat
+                      </button>
+                      <button
+                        onClick={() => handleDeletePanel(activePanel.id)}
+                        className="text-[10px] bg-rose-950 hover:bg-rose-900 px-2 py-1 rounded text-rose-300 font-bold transition"
+                        title="Hapus panel ini"
+                      >
+                        Hapus
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Upload Gambar Utama Panel */}
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Unggah Gambar Visual Utama</label>
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="file" 
+                        accept="image/*"
+                        onChange={handlePanelImageUpload}
+                        id="panel-image-input"
+                        className="hidden" 
+                      />
+                      <label 
+                        htmlFor="panel-image-input"
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-[11px] font-bold py-1.5 px-3 rounded-lg cursor-pointer transition flex items-center gap-1"
+                      >
+                        <span>📁</span> Pilih Gambar
+                      </label>
+                      {activePanel.image && (
+                        <button
+                          onClick={() => updateActivePanel('image', null)}
+                          className="text-rose-400 hover:text-rose-300 text-[10px] font-bold"
+                        >
+                          Hapus Gambar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Input Visual Description */}
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Deskripsi Aksi & Visual Adegan</label>
+                    <textarea
+                      value={activePanel.visualDesc || ''}
+                      onChange={(e) => updateActivePanel('visualDesc', e.target.value)}
+                      rows="2"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      placeholder="Jelaskan apa yang terlihat di layar video (e.g. Model menunjuk ke kamera, perbandingan sebelum-sesudah)..."
+                    />
+                  </div>
+
+                  {/* Input Audio / Voiceover */}
+                  <div>
+                    <label className="block text-slate-400 text-[11px] mb-1">Naskah Pengisi Suara / Voiceover (VO)</label>
+                    <textarea
+                      value={activePanel.voiceover || ''}
+                      onChange={(e) => updateActivePanel('voiceover', e.target.value)}
+                      rows="2"
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-yellow-100 italic focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      placeholder="Tulis perkataan yang akan diucapkan oleh pengisi suara atau teks yang ingin dibaca keras-keras..."
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Input Teks Overlay Layar */}
+                    <div>
+                      <label className="block text-slate-400 text-[11px] mb-1">Teks Overlay Video (Caption)</label>
+                      <input
+                        type="text"
+                        value={activePanel.textOverlay || ''}
+                        onChange={(e) => updateActivePanel('textOverlay', e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                        placeholder="Teks eye-catching di video..."
+                      />
+                    </div>
+
+                    {/* Durasi Panel (detik) */}
+                    <div>
+                      <label className="block text-slate-400 text-[11px] mb-1">Durasi Adegan (Detik)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="60"
+                        value={activePanel.duration || 3}
+                        onChange={(e) => updateActivePanel('duration', parseInt(e.target.value) || 1)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-sky-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Pengaturan Posisi Model Pada Frame Terpilih */}
+                  {selectedModel !== 'none' && (
+                    <div className="pt-2 border-t border-slate-800/60 mt-2 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <label className="block text-sky-400 text-[11px] font-bold">Pengaturan Model Pada Adegan Ini</label>
+                        <div className="flex items-center gap-1.5">
+                          <input 
+                            type="checkbox" 
+                            id="model-visibility" 
+                            checked={activePanel.modelVisible !== false}
+                            onChange={(e) => updateActivePanel('modelVisible', e.target.checked)}
+                            className="rounded bg-slate-900 border-slate-800 text-sky-600 focus:ring-0 focus:ring-offset-0"
+                          />
+                          <label htmlFor="model-visibility" className="text-slate-400 text-[10px] cursor-pointer">Tampilkan Model</label>
+                        </div>
+                      </div>
+
+                      {activePanel.modelVisible !== false && (
+                        <div className="grid grid-cols-3 gap-2 text-[10px]">
+                          <div>
+                            <span className="text-slate-400 block mb-0.5">Ukuran ({activePanel.modelScale || 100}%)</span>
+                            <input 
+                              type="range" 
+                              min="30" 
+                              max="200" 
+                              value={activePanel.modelScale || 100}
+                              onChange={(e) => updateActivePanel('modelScale', parseInt(e.target.value))}
+                              className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-slate-400 block mb-0.5">Posisi X ({activePanel.modelPositionX || 50}%)</span>
+                            <input 
+                              type="range" 
+                              min="0" 
+                              max="100" 
+                              value={activePanel.modelPositionX || 50}
+                              onChange={(e) => updateActivePanel('modelPositionX', parseInt(e.target.value))}
+                              className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-slate-400 block mb-0.5">Posisi Y ({activePanel.modelPositionY || 50}%)</span>
+                            <input 
+                              type="range" 
+                              min="0" 
+                              max="100" 
+                              value={activePanel.modelPositionY || 50}
+                              onChange={(e) => updateActivePanel('modelPositionY', parseInt(e.target.value))}
+                              className="w-full h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Timeline & Daftar Seluruh Panel Storyboard */}
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                <span>📋</span> Daftar Alur Panel ({panels.length} Adegan)
+              </h3>
+              <button
+                onClick={handleAddPanel}
+                className="bg-sky-600/20 hover:bg-sky-600/30 text-sky-300 border border-sky-800 font-bold px-3 py-1.5 rounded-lg text-xs transition flex items-center gap-1"
+              >
+                <span>➕</span> Tambah Panel Adegan
+              </button>
+            </div>
+
+            {/* Grid Thumbnail Urutan Panel */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {panels.map((panel) => (
+                <div
+                  key={panel.id}
+                  onClick={() => setActivePanelId(panel.id)}
+                  className={`cursor-pointer rounded-xl border p-2.5 transition relative flex flex-col justify-between group ${
+                    activePanelId === panel.id
+                      ? 'bg-sky-950/30 border-sky-500 shadow-lg shadow-sky-950/10'
+                      : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
+                  }`}
+                >
+                  <div>
+                    {/* Header Kecil di Thumbnail */}
+                    <div className="flex justify-between items-center text-[10px] mb-1.5">
+                      <span className="font-bold text-sky-400">#AD {panel.sceneNum}</span>
+                      <span className="text-slate-500 font-mono">{panel.duration} detik</span>
+                    </div>
+
+                    {/* Area Mini Visual di Thumbnail */}
+                    <div className="aspect-[16/10] bg-slate-950 border border-slate-800/80 rounded flex items-center justify-center overflow-hidden mb-2 relative">
+                      {panel.image ? (
+                        <img 
+                          src={panel.image} 
+                          alt="mini preview" 
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="text-[14px] opacity-35">🖼️</div>
+                      )}
+                      
+                      {/* Badge Model Indicator */}
+                      {panel.modelVisible && selectedModel !== 'none' && (
+                        <div className="absolute top-1 left-1 bg-sky-500 w-1.5 h-1.5 rounded-full" title="Ada Model Terpasang"></div>
+                      )}
+                    </div>
+
+                    {/* Pratinjau Deskripsi Visual & Audio singkat */}
+                    <p className="text-[10px] text-slate-300 font-medium line-clamp-1 mb-1">
+                      {panel.visualDesc || 'Belum ada visual...'}
+                    </p>
+                    <p className="text-[10px] text-yellow-300/80 italic line-clamp-1">
+                      "{panel.voiceover || 'Naskah VO...'}"
+                    </p>
+                  </div>
+
+                  {/* Tombol Hapus Cepat */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeletePanel(panel.id);
+                    }}
+                    className="absolute -top-1.5 -right-1.5 bg-rose-500 hover:bg-rose-400 text-slate-950 w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-black opacity-0 group-hover:opacity-100 transition shadow"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+
+              {/* Tambah Panel Cepat */}
+              <button
+                onClick={handleAddPanel}
+                className="border-2 border-dashed border-slate-800 hover:border-slate-700 rounded-xl flex flex-col items-center justify-center p-4 text-slate-500 hover:text-slate-400 transition min-h-[120px]"
+              >
+                <span className="text-xl mb-1">➕</span>
+                <span className="text-[10px] font-bold">Baru</span>
+              </button>
+            </div>
+          </div>
+
+        </main>
+
+        {/* Panel Kanan: Pengaturan Model & Presenter */}
+        <aside className="w-full lg:w-80 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900/40 p-5 flex flex-col gap-6 overflow-y-auto shrink-0">
+          
+          <div>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-sky-400 mb-3 flex items-center gap-1.5">
+              <span>👤</span> Model & Presenter Iklan
+            </h2>
+            <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+              Pilih karakter digital pembantu visualisasi naskah atau unggah model buatan sendiri untuk diletakkan di dalam video.
+            </p>
+
+            {/* List Model Bawaan */}
+            <div className="space-y-2 mb-4">
+              {defaultModels.map((model) => (
+                <div
+                  key={model.id}
+                  onClick={() => {
+                    setSelectedModel(model.id);
+                    triggerNotification(`Karakter diubah ke ${model.name}`);
+                  }}
+                  className={`p-3 rounded-xl border text-left transition cursor-pointer flex items-center gap-3 ${
+                    selectedModel === model.id
+                      ? 'bg-sky-950/40 border-sky-500 text-sky-300'
+                      : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400'
+                  }`}
+                >
+                  <div className="w-10 h-10 bg-slate-900 rounded-lg flex items-center justify-center overflow-hidden border border-slate-800 shrink-0">
+                    {model.id === 'model-1' && <span className="text-lg">👩‍🦰</span>}
+                    {model.id === 'model-2' && <span className="text-lg">🧑‍💻</span>}
+                    {model.id === 'model-3' && <span className="text-lg">🧕</span>}
+                    {model.id === 'model-4' && <span className="text-lg">👨‍💼</span>}
+                    {model.id === 'none' && <span className="text-xs">🚫</span>}
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold">{model.name}</h4>
+                    <p className="text-[10px] text-slate-500 line-clamp-1">{model.desc}</p>
+                  </div>
+                </div>
+              ))}
+
+              {/* Pilihan Model Kustom */}
+              <div
+                onClick={() => {
+                  if (customModelImg) {
+                    setSelectedModel('custom');
+                  }
+                }}
+                className={`p-3 rounded-xl border text-left transition flex flex-col gap-2 ${
+                  selectedModel === 'custom'
+                    ? 'bg-sky-950/40 border-sky-500 text-sky-300'
+                    : 'bg-slate-950 border-slate-800 hover:border-slate-700 text-slate-400'
+                } ${customModelImg ? 'cursor-pointer' : 'cursor-default'}`}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-slate-900 rounded-lg flex items-center justify-center overflow-hidden border border-slate-800 shrink-0">
+                    {customModelImg ? (
+                      <img src={customModelImg} alt="Kustom" className="w-full h-full object-cover" />
+                    ) : (
+                      <span className="text-lg">👤</span>
+                    )}
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold">Gunakan Model Kustom</h4>
+                    <p className="text-[10px] text-slate-500">Unggah foto model Anda sendiri</p>
+                  </div>
+                </div>
+
+                <div className="mt-1">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handleCustomModelUpload}
+                    id="custom-model-input"
+                    className="hidden"
+                  />
+                  <label
+                    htmlFor="custom-model-input"
+                    className="block text-center bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-800 py-1.5 px-2 rounded-lg text-[10px] font-bold cursor-pointer transition"
+                  >
+                    {customModelImg ? 'Ganti Foto Model' : 'Unggah Foto Model'}
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-800/80 pt-4">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 flex items-center gap-1.5">
+              <span>💡</span> Tips Affiliate Storyboard
+            </h2>
+            <ul className="text-[11px] text-slate-500 space-y-2 leading-relaxed">
+              <li>• <strong className="text-slate-300">Hook 3 Detik Pertama:</strong> Buat visual heboh, masalah relate audiens, atau kejutan agar mereka tidak skip video.</li>
+              <li>• <strong className="text-slate-300">Pentingnya Teks Overlay:</strong> 80% audiens menonton video affiliate tanpa menyalakan suara, pastikan teks di video Anda sangat jelas.</li>
+              <li>• <strong className="text-slate-300">Call-to-Action (CTA):</strong> Adegan akhir harus menyuruh penonton secara tegas mengklik "Keranjang Kuning" atau "Link di Bio".</li>
+            </ul>
+          </div>
+        </aside>
+
+      </div>
+
+      {/* Footer Hak Cipta */}
+      <footer className="border-t border-slate-800 bg-slate-950 px-6 py-3 text-center text-slate-500 text-[10px]">
+        © {new Date().getFullYear()} AD-STORYBOARD Generator. Dirancang untuk efisiensi pembuatan konten affiliate digital. All Rights Reserved.
+      </footer>
+    </div>
+  );
+}
